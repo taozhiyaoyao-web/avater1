@@ -1,4 +1,3 @@
-from http.server import BaseHTTPRequestHandler
 import json
 import os
 import io
@@ -6,7 +5,10 @@ import math
 import base64
 import urllib.request
 import urllib.error
+from flask import Flask, request, jsonify
 from PIL import Image
+
+app = Flask(__name__)
 
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
 MODEL = "gemini-3.1-flash-image-preview"
@@ -99,39 +101,26 @@ def make_bounce_gif(png_b64):
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
-class handler(BaseHTTPRequestHandler):
-    def _send_json(self, status, payload):
-        body = json.dumps(payload).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+@app.route("/api/generate", methods=["POST", "OPTIONS"])
+def generate():
+    if request.method == "OPTIONS":
+        return ("", 204)
+    try:
+        payload = request.get_json(force=True, silent=True) or {}
+        image_b64 = payload.get("image_base64")
+        mime_type = payload.get("mime_type", "image/jpeg")
+        pose_id = payload.get("pose_id")
 
-    def do_POST(self):
-        try:
-            length = int(self.headers.get("Content-Length", 0))
-            payload = json.loads(self.rfile.read(length))
+        if not image_b64:
+            raise ValueError("缺少 image_base64")
+        if pose_id not in POSE_PROMPTS:
+            raise ValueError("未知的 pose_id")
+        if not GOOGLE_API_KEY:
+            raise ValueError("服务器未配置 GOOGLE_API_KEY 环境变量")
 
-            image_b64 = payload.get("image_base64")
-            mime_type = payload.get("mime_type", "image/jpeg")
-            pose_id = payload.get("pose_id")
+        png_b64, _ = call_gemini(image_b64, mime_type, pose_id)
+        gif_b64 = make_bounce_gif(png_b64)
 
-            if not image_b64:
-                raise ValueError("缺少 image_base64")
-            if pose_id not in POSE_PROMPTS:
-                raise ValueError("未知的 pose_id")
-            if not GOOGLE_API_KEY:
-                raise ValueError("服务器未配置 GOOGLE_API_KEY 环境变量")
-
-            png_b64, _ = call_gemini(image_b64, mime_type, pose_id)
-            gif_b64 = make_bounce_gif(png_b64)
-
-            self._send_json(200, {"gif_base64": gif_b64})
-        except Exception as e:
-            self._send_json(500, {"error": str(e)})
-
-    def do_OPTIONS(self):
-        self.send_response(204)
-        self.end_headers()
-        
+        return jsonify({"gif_base64": gif_b64})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
